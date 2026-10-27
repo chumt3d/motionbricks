@@ -51,6 +51,22 @@ small constant changes move outputs by about as much as FP16 itself does:
 Use FP32 when outputs must match the reference runtime. Compare FP16 on the target
 runtime, where FP16 kernels run in FP16.
 
+## RTX 4070 Laptop results (Chrome 156, onnxruntime-web 1.30.0-dev a6e96aa798)
+
+Background tab of a minimised window, FP32, one request at a time, with the 240
+requests above. Latency runs from writing the inputs to having the token count and
+the motion on the CPU.
+
+| Graph and mode | Nodes on the CPU | Copies | p50 | p95 | p99 | Matches CPU FP32 |
+| --- | --- | --- | --- | --- | --- | --- |
+| Original, CPU inputs and outputs | 185 | 577 | 1,785 ms | 2,245 ms | 2,381 ms | 30 of 30 |
+| Static, GPU inputs and outputs | 0 | 0 | 181 ms | 231 ms | 347 ms | 60 of 60 |
+| Static, graph capture | 0 | 0 | 15.9 ms | 20.0 ms | 22.7 ms | 240 of 240, max 2.3e-3 |
+
+Graph capture removes the per-dispatch CPU cost of about 1,700 kernels. One call
+yields 18 to 58 frames, so the median call produces motion about 100 times faster
+than real time. The FP32 session adds about 0.9 GB of GPU memory.
+
 ## Graph capture
 
 ONNX Runtime's WebGPU graph capture records compute dispatches and replays them. Its

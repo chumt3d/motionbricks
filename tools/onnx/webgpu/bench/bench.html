@@ -45,7 +45,8 @@ async function step(name, fn) {
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 async function main() {
-  const infer = rpc(new Worker("/bench/infer.worker.mjs", { type: "module" }));
+  const infer = rpc(new Worker("/bench/infer.worker.mjs" + (params.get("wasm") ? "?wasm=" + encodeURIComponent(params.get("wasm")) : ""), { type: "module" }));
+  out.wasm = params.get("wasm") || "/ort/dist";
   const paceWorker = rpc(new Worker("/bench/pacing.worker.mjs", { type: "module" }));
   await infer.ready; await paceWorker.ready.catch(() => {});
   const low = await step("lowPowerAdapterInfo", async () => {
@@ -54,7 +55,7 @@ async function main() {
   });
   const powerPreference = plan === "lowpower" ? "low-power" : "high-performance";
   const info = await step("initDevice", () => infer.call("initDevice", { powerPreference, wantF16: true }));
-  const pace = plan === "full";
+  const pace = plan === "full" || plan === "core";
   out.note = "Timings from SwiftShader or WSL are not device evidence.";
   if (pace) {
     await step("pacingInit", () => paceWorker.call("init", { powerPreference }));
@@ -99,6 +100,37 @@ async function main() {
   if (plan === "verify") {
     await step("load:static32-capture", () => infer.call("loadMB", { url: "/models/soma_fp32_static.onnx", io: "gpu", capture: true, disableCpuFallback: true, skipFirstRun: true }));
     await step("repeat:capture", () => infer.call("repeat", { indices: [0, 1, 0, 2, 0], times: 3 }));
+  }
+  if (plan === "verify2") {
+    await step("load:static32-gpuio", () => infer.call("loadMB", { url: "/models/soma_fp32_static.onnx", io: "gpu", disableCpuFallback: true }));
+    await step("repeat:gpuio", () => infer.call("repeat", { indices: [0, 1, 0], times: 2 }));
+    await step("load:static32-capture-firstrun", () => infer.call("loadMB", { url: "/models/soma_fp32_static.onnx", io: "gpu", capture: true, disableCpuFallback: true }));
+    await step("repeat:capture", () => infer.call("repeat", { indices: [0, 1, 0, 2, 0], times: 3 }));
+    await step("logs", () => infer.call("logs", { grep: "rror|apture|nplace|MemCpy" }));
+  }
+  if (plan === "core") {
+    const mb32 = "/models/soma_fp32_static.onnx";
+    await step("load:static32-gpuio-warm", () => infer.call("loadMB", { url: mb32, io: "gpu", disableCpuFallback: true }));
+    await step("load:static32-capture", () => infer.call("loadMB", { url: mb32, io: "gpu", capture: true, disableCpuFallback: true }));
+    await step("bench:static32-capture", () => infer.call("benchMB", { count: 120, warmup: 5 }));
+    await step("loadCore", () => infer.call("loadCore", { allowCpuFallback: params.get("coreFallback") === "1" }));
+    await sleep(2000);
+    await step("coreAlone", () => infer.call("coreAlone", { rounds: 5, withText: true }));
+    await step("bench:static32-capture-coresident", () => infer.call("benchMB", { count, warmup: 3 }));
+    await step("interleave", () => infer.call("interleave", { rounds: 20 }));
+    await step("pacing+interleave", async () => {
+      const p = paceWorker.call("run", { durationMs: 15000 });
+      const m = await infer.call("interleave", { rounds: 10 });
+      await paceWorker.call("stop");
+      return { pacing: await p, interleave: m };
+    });
+    await step("pacing+mbLoop-coresident", async () => {
+      const p = paceWorker.call("run", { durationMs: 10000 });
+      const m = infer.call("mbLoop", { durationMs: 10000 });
+      return { pacing: await p, mb: await m };
+    });
+    await step("pacingBaseline-after", () => paceWorker.call("run", { durationMs: 10000 }));
+    await step("release:all", () => infer.call("release", { what: "all" }));
   }
   if (plan === "lowpower") {
     await step("load:static32-capture", () => infer.call("loadMB", { url: "/models/soma_fp32_static.onnx", io: "gpu", capture: true, disableCpuFallback: true }));

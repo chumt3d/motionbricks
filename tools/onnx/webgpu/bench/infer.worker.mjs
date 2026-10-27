@@ -14,9 +14,10 @@ for (const level of ["log", "info", "warn", "error", "debug"]) {
 }
 
 const ort = await import("/ort/dist/ort.webgpu.mjs");
+const wasmRoot = new URLSearchParams(self.location.search).get("wasm") || "/ort/dist";
 ort.env.wasm.wasmPaths = {
-  mjs: "/ort/dist/ort-wasm-simd-threaded.asyncify.mjs",
-  wasm: "/ort/dist/ort-wasm-simd-threaded.asyncify.wasm",
+  mjs: wasmRoot + "/ort-wasm-simd-threaded.asyncify.mjs",
+  wasm: wasmRoot + "/ort-wasm-simd-threaded.asyncify.wasm",
 };
 ort.env.wasm.proxy = false;
 ort.env.wasm.numThreads = Math.min(4, Math.max(1, navigator.hardwareConcurrency || 1));
@@ -308,7 +309,7 @@ async function benchMB({ count, warmup, withMotion = true, compare = true }) {
   };
 }
 
-async function loadCore() {
+async function loadCore({ allowCpuFallback = false } = {}) {
   const manifest = await (await fetch("/core/manifest.json")).json();
   const graphs = ["history-tokenizer.onnx", "denoiser.onnx", "decoder.onnx", "prompt-encoder/text_encoder.onnx"];
   const result = { sessions: {} };
@@ -323,7 +324,7 @@ async function loadCore() {
     const session = await ort.InferenceSession.create(graphBytes.bytes, {
       executionProviders: [epOptions()],
       externalData: [{ data: dataBytes.bytes, path: dataPath.split("/").pop() }],
-      extra: { session: { disable_cpu_ep_fallback: graph.startsWith("prompt-encoder") ? "0" : "1" } },
+      extra: { session: { disable_cpu_ep_fallback: allowCpuFallback || graph.startsWith("prompt-encoder") ? "0" : "1" } },
       logSeverityLevel: 1,
       logVerbosityLevel: 0,
     });
