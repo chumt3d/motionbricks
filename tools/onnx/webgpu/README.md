@@ -29,8 +29,8 @@ git lfs pull --include='motionbricks/assets/onnx/soma/*,assets/motions/soma/**'
 
 | Graph | Nodes | Token counts equal | Max abs difference, valid frames |
 | --- | --- | --- | --- |
-| FP32 | 6,993 -> 1,978 | 240 of 240 | 1.4e-3 (median 5.9e-5) |
-| Mixed FP16 | 7,169 -> 2,149 | 239 of 240 | see below |
+| FP32 | 6,993 -> 2,014 | 240 of 240, all finite and allowed | 1.4e-3 (median 5.9e-5) |
+| Mixed FP16, before the WebGPU type and scatter rewrites | 7,169 -> 2,149 | 239 of 240 | see below |
 
 The FP32 static graph matches the original. The remaining differences come from
 kernel choices and accumulation order, not from token choices.
