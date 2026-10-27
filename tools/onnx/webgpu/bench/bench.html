@@ -1,0 +1,114 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>mb-bench: idle</title>
+<pre id="log"></pre>
+<script type="module">
+// SPDX-License-Identifier: Apache-2.0
+const params = new URLSearchParams(location.search);
+const run = params.get("run") || "run";
+const plan = params.get("plan") || "full";
+const out = { run, plan, startedAt: new Date().toISOString(), userAgent: navigator.userAgent, crossOriginIsolated, hardwareConcurrency: navigator.hardwareConcurrency, steps: [] };
+window.__bench = out;
+const logEl = document.getElementById("log");
+const log = (line) => { logEl.textContent += line + "\n"; };
+
+function rpc(worker) {
+  let next = 1;
+  const waiting = new Map();
+  const ready = new Promise((resolve) => waiting.set(0, { resolve, reject: resolve }));
+  worker.onmessage = (event) => {
+    const { id, ok, result, error, logTail } = event.data;
+    const w = waiting.get(id); waiting.delete(id);
+    if (ok) w.resolve(result); else w.reject(Object.assign(new Error(error), { logTail }));
+  };
+  worker.onerror = (event) => { for (const w of waiting.values()) w.reject(new Error("worker error " + event.message)); };
+  const call = (type, args) => new Promise((resolve, reject) => { const id = next++; waiting.set(id, { resolve, reject }); worker.postMessage({ id, type, args }); });
+  return { ready, call };
+}
+
+async function flush() {
+  await fetch("/results/" + run + ".json", { method: "POST", body: JSON.stringify(out, null, 1) });
+}
+
+async function step(name, fn) {
+  const record = { name, start: Date.now() };
+  out.steps.push(record);
+  document.title = "mb-bench: " + name;
+  log("> " + name);
+  try { record.result = await fn(); }
+  catch (error) { record.error = String(error && error.stack || error); record.logTail = error.logTail; log("  ERROR " + record.error.split("\n")[0]); }
+  record.end = Date.now();
+  await flush();
+  return record.result;
+}
+
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+async function main() {
+  const infer = rpc(new Worker("/bench/infer.worker.mjs", { type: "module" }));
+  const paceWorker = rpc(new Worker("/bench/pacing.worker.mjs", { type: "module" }));
+  await infer.ready; await paceWorker.ready.catch(() => {});
+  const low = await step("lowPowerAdapterInfo", async () => {
+    const adapter = await navigator.gpu.requestAdapter({ powerPreference: "low-power" });
+    return adapter ? { ...JSON.parse(JSON.stringify({ vendor: adapter.info.vendor, architecture: adapter.info.architecture, device: adapter.info.device, description: adapter.info.description })), shaderF16: adapter.features.has("shader-f16") } : null;
+  });
+  const powerPreference = plan === "lowpower" ? "low-power" : "high-performance";
+  const info = await step("initDevice", () => infer.call("initDevice", { powerPreference, wantF16: true }));
+  const pace = plan === "full";
+  out.note = "Timings from SwiftShader or WSL are not device evidence.";
+  if (pace) {
+    await step("pacingInit", () => paceWorker.call("init", { powerPreference }));
+    await step("pacingBaseline", () => paceWorker.call("run", { durationMs: 10000 }));
+  }
+  const count = Number(params.get("count") || 240);
+  if (plan === "full") {
+    const mb32 = "/models/soma_fp32_static.onnx";
+    await step("load:static32-gpuio", () => infer.call("loadMB", { url: mb32, io: "gpu", disableCpuFallback: true }));
+    await step("bench:static32-gpuio", () => infer.call("benchMB", { count: 60, warmup: 3 }));
+    await step("load:static32-capture", () => infer.call("loadMB", { url: mb32, io: "gpu", capture: true, disableCpuFallback: true }));
+    await step("bench:static32-capture", () => infer.call("benchMB", { count, warmup: 5 }));
+    await step("bench:static32-capture-tokensOnly", () => infer.call("benchMB", { count: 120, warmup: 0, withMotion: false, compare: false }));
+    await sleep(2000);
+    await step("pacing+mbLoop", async () => {
+      const p = paceWorker.call("run", { durationMs: 10000 });
+      const m = infer.call("mbLoop", { durationMs: 10000 });
+      return { pacing: await p, mb: await m };
+    });
+    await step("loadCore", () => infer.call("loadCore", {}));
+    await sleep(2000);
+    await step("coreAlone", () => infer.call("coreAlone", { rounds: 5, withText: true }));
+    await step("bench:static32-capture-coresident", () => infer.call("benchMB", { count: 120, warmup: 3 }));
+    await step("interleave", () => infer.call("interleave", { rounds: 20 }));
+    await step("pacing+interleave", async () => {
+      const p = paceWorker.call("run", { durationMs: 15000 });
+      const m = await infer.call("interleave", { rounds: 10 });
+      await paceWorker.call("stop");
+      return { pacing: await p, interleave: m };
+    });
+    await step("pacing+mbLoop-coresident", async () => {
+      const p = paceWorker.call("run", { durationMs: 10000 });
+      const m = infer.call("mbLoop", { durationMs: 10000 });
+      return { pacing: await p, mb: await m };
+    });
+    await step("release:all", () => infer.call("release", { what: "all" }));
+    if (params.get("before") !== "0") {
+      await step("load:orig32-dynamic", () => infer.call("loadMB", { url: "/models/orig/mmm_v6_soma_fp32.onnx", io: "cpu" }));
+      await step("bench:orig32-dynamic", () => infer.call("benchMB", { count: 30, warmup: 2 }));
+    }
+  }
+  if (plan === "verify") {
+    await step("load:static32-capture", () => infer.call("loadMB", { url: "/models/soma_fp32_static.onnx", io: "gpu", capture: true, disableCpuFallback: true, skipFirstRun: true }));
+    await step("repeat:capture", () => infer.call("repeat", { indices: [0, 1, 0, 2, 0], times: 3 }));
+  }
+  if (plan === "lowpower") {
+    await step("load:static32-capture", () => infer.call("loadMB", { url: "/models/soma_fp32_static.onnx", io: "gpu", capture: true, disableCpuFallback: true }));
+    await step("bench:static32-capture", () => infer.call("benchMB", { count: 120, warmup: 5 }));
+  }
+  await step("release", () => infer.call("release", { what: "all" }));
+  out.finishedAt = new Date().toISOString();
+  document.title = "mb-bench: done";
+  await flush();
+}
+main().catch(async (error) => { out.fatal = String(error && error.stack || error); document.title = "mb-bench: fatal"; await flush(); });
+</script>
+

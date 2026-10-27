@@ -4,15 +4,17 @@ These scripts prepare the SOMA ONNX models for onnxruntime-web with the WebGPU
 execution provider and check the result against the original models.
 
 The exported models accept any batch size, so their shape arithmetic runs at run
-time. In onnxruntime-web those Shape, Range, ConstantOfShape and Mod nodes fall back
-to the CPU, and every CPU node adds a GPU<->host copy. The WebGPU EP also lacks
-OneHot. With the batch fixed at one, all of that arithmetic is constant.
+time. In onnxruntime-web 1.30.0-dev (a6e96aa798) on an RTX 4070, the original FP32
+graph places 185 nodes on the CPU and inserts 577 GPU<->host copies. The WebGPU EP
+also lacks OneHot and some integer and bool kernels. The static graph runs every node
+on the GPU with no copies, which is also what WebGPU graph capture requires.
 
 | Script | Purpose |
 | --- | --- |
-| `make_static.py` | Fixes the batch at 1, folds constant subgraphs with the ONNX Runtime CPU kernels, replaces OneHot with Cast, Equal and Where, and fails if Range, ConstantOfShape, Mod or OneHot remain. |
+| `make_static.py` | Fixes the batch at 1, folds constant subgraphs with the ONNX Runtime CPU kernels, replaces OneHot with Cast, Equal and Where, rewrites the integer and bool nodes the WebGPU EP cannot run, makes the scatters safe for graph capture, and writes the graph with external weights. |
 | `soma_requests.py` | Builds varied N=1 requests from the bundled SOMA sample clips with the engine's own Warp encode kernels on the CPU. |
-| `check_parity.py` | Runs the original and static graphs on the CPU and compares token counts and the valid frames of `pred_global_motions`. |
+| `check_parity.py` | Runs the original and static graphs on the CPU and compares token counts and the valid frames of `pred_global_motions`, and checks that the static outputs are finite and their token counts allowed. |
+| `bench/` | Browser benchmark for onnxruntime-web: a cross-origin-isolated static server, an inference worker, a frame-pacing worker and `bench.html`. It measures placement, copies, latency with and without graph capture, device parity, and co-residency with other ONNX sessions. |
 
 ```sh
 uv venv -p 3.12 .venv
@@ -48,6 +50,16 @@ small constant changes move outputs by about as much as FP16 itself does:
 
 Use FP32 when outputs must match the reference runtime. Compare FP16 on the target
 runtime, where FP16 kernels run in FP16.
+
+## Graph capture
+
+ONNX Runtime's WebGPU graph capture records compute dispatches and replays them. Its
+GPU-to-GPU tensor copy (`BufferManager::MemCpy`) encodes a buffer copy that the
+capture does not record. ScatterND and ScatterElements use that copy when their
+output cannot reuse their data input, which is the case when the data input is a
+constant. Replays then scatter into the previous run's output and the results drift.
+`make_static.py` adds a zero computed from an input to each scatter's data
+input, so ONNX Runtime runs every scatter in place and nothing needs the copy.
 
 ## Licence
 

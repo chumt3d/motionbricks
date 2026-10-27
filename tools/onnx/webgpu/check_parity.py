@@ -75,6 +75,9 @@ def main() -> None:
         frames = FRAMES_PER_TOKEN * int(tokens)
         diffs.append(float(np.abs(original_motion[index, :frames] - static_motion[index, :frames]).max()))
     diffs = np.asarray(diffs)
+    allowed = requests["allowed_pred_num_tokens"].reshape(len(static_tokens), -1)
+    legal = np.asarray([0 <= tokens - 6 < allowed.shape[1] and allowed[i, tokens - 6] == 1 for i, tokens in enumerate(static_tokens)])
+    finite = np.asarray([np.isfinite(static_motion[i, : FRAMES_PER_TOKEN * int(t)]).all() for i, t in enumerate(static_tokens)])
     summary = {
         "requests": int(len(diffs)),
         "token_count_matches": int(token_match.sum()),
@@ -83,6 +86,8 @@ def main() -> None:
         "valid_frame_max_abs_diff_p99": float(np.percentile(diffs[token_match], 99)) if token_match.any() else None,
         "bit_identical_requests": int((diffs == 0).sum()),
         "mismatched_requests": [int(i) for i in np.flatnonzero(~token_match)],
+        "static_finite_requests": int(finite.sum()),
+        "static_legal_token_requests": int(legal.sum()),
         "cpu_ms_original_p50_p95": [float(np.percentile(original_ms, q)) for q in (50, 95)],
         "cpu_ms_static_p50_p95": [float(np.percentile(static_ms, q)) for q in (50, 95)],
         "onnxruntime": ort.__version__,
