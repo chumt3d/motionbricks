@@ -45,8 +45,10 @@ async function step(name, fn) {
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 async function main() {
-  const infer = rpc(new Worker("/bench/infer.worker.mjs" + (params.get("wasm") ? "?wasm=" + encodeURIComponent(params.get("wasm")) : ""), { type: "module" }));
-  out.wasm = params.get("wasm") || "/ort/dist";
+  const workerQuery = new URLSearchParams();
+  for (const key of ["ort", "ortEntry", "wasm"]) if (params.get(key)) workerQuery.set(key, params.get(key));
+  const infer = rpc(new Worker("/bench/infer.worker.mjs?" + workerQuery, { type: "module" }));
+  out.ortRuntime = Object.fromEntries(workerQuery);
   const paceWorker = rpc(new Worker("/bench/pacing.worker.mjs", { type: "module" }));
   await infer.ready; await paceWorker.ready.catch(() => {});
   const low = await step("lowPowerAdapterInfo", async () => {
@@ -131,6 +133,12 @@ async function main() {
     });
     await step("pacingBaseline-after", () => paceWorker.call("run", { durationMs: 10000 }));
     await step("release:all", () => infer.call("release", { what: "all" }));
+  }
+  if (plan === "capture-ab") {
+    // The capture session is the first session on a fresh device, then serves every request.
+    const captured = await step("load:static32-capture-first", () => infer.call("loadMB", { url: "/models/soma_fp32_static.onnx", io: "gpu", capture: true, disableCpuFallback: true }));
+    if (captured) await step("bench:static32-capture", () => infer.call("benchMB", { count, warmup: 0 }));
+    await step("repeat:capture", () => infer.call("repeat", { indices: [0, 1, 0, 2, 0], times: 3 }));
   }
   if (plan === "lowpower") {
     await step("load:static32-capture", () => infer.call("loadMB", { url: "/models/soma_fp32_static.onnx", io: "gpu", capture: true, disableCpuFallback: true }));

@@ -13,8 +13,10 @@ for (const level of ["log", "info", "warn", "error", "debug"]) {
   };
 }
 
-const ort = await import("/ort/dist/ort.webgpu.mjs");
-const wasmRoot = new URLSearchParams(self.location.search).get("wasm") || "/ort/dist";
+const workerParams = new URLSearchParams(self.location.search);
+const ortRoot = workerParams.get("ort") || "/ort/dist";
+const ort = await import(ortRoot + "/" + (workerParams.get("ortEntry") || "ort.webgpu.mjs"));
+const wasmRoot = workerParams.get("wasm") || ortRoot;
 ort.env.wasm.wasmPaths = {
   mjs: wasmRoot + "/ort-wasm-simd-threaded.asyncify.mjs",
   wasm: wasmRoot + "/ort-wasm-simd-threaded.asyncify.wasm",
